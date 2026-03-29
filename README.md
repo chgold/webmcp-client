@@ -2,7 +2,29 @@
 
 Meta MCP Bridge for WebMCP-compliant servers. Configure **once** in Claude Desktop, then add/remove any number of WebMCP sites dynamically — no restart required.
 
+## Installation
+
+```bash
+npm install -g github:chgold/webmcp-bridge
+```
+
+This installs the `webmcp-bridge` command globally from GitHub.
+
 ## Claude Desktop Configuration (set once, never change)
+
+After installing globally:
+
+```json
+{
+  "mcpServers": {
+    "webmcp": {
+      "command": "webmcp-bridge"
+    }
+  }
+}
+```
+
+Or if you cloned the repo manually, point to the `index.js` directly:
 
 ```json
 {
