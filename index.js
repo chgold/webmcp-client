@@ -10,6 +10,10 @@ import { join } from 'path';
 const CONFIG_DIR = join(homedir(), '.webmcp-bridge');
 const CONFIG_FILE = join(CONFIG_DIR, 'sites.json');
 
+function sanitizeName(s) {
+  return s.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 // siteKey/toolName → { siteKey, originalName, siteConfig, toolsEndpoint, toolDef }
 const toolMeta = new Map();
 
@@ -62,7 +66,7 @@ async function loadSiteTools(siteKey, siteConfig) {
   }
 
   for (const tool of tools) {
-    const qualifiedName = `${siteKey}/${tool.name}`;
+    const qualifiedName = `${sanitizeName(siteKey)}_${sanitizeName(tool.name)}`;
     toolMeta.set(qualifiedName, {
       siteKey,
       originalName: tool.name,
@@ -86,7 +90,7 @@ function clearSiteTools(siteKey) {
 function getMetaTools() {
   return [
     {
-      name: 'webmcp.addSite',
+      name: 'webmcp_addSite',
       description:
         'Add a WebMCP site. Compatible with any WebMCP server (Drupal, WordPress, XenForo, etc.)',
       inputSchema: {
@@ -109,12 +113,12 @@ function getMetaTools() {
       },
     },
     {
-      name: 'webmcp.listSites',
+      name: 'webmcp_listSites',
       description: 'List all configured WebMCP sites with their tool counts',
       inputSchema: { type: 'object', properties: {} },
     },
     {
-      name: 'webmcp.removeSite',
+      name: 'webmcp_removeSite',
       description: 'Remove a WebMCP site from configuration',
       inputSchema: {
         type: 'object',
@@ -173,7 +177,7 @@ async function handleAddSite(args) {
       content: [
         {
           type: 'text',
-          text: `✓ Site "${name}" added — ${toolCount} tool(s) loaded.\nTools available as "${name}/<tool_name>".`,
+          text: `✓ Site "${name}" added — ${toolCount} tool(s) loaded.\nTools available as "${sanitizeName(name)}_<tool_name>".`,
         },
       ],
     };
@@ -440,9 +444,9 @@ async function main() {
     const toolName = request.params.name;
     const toolArgs = request.params.arguments || {};
 
-    if (toolName === 'webmcp.addSite') return handleAddSite(toolArgs);
-    if (toolName === 'webmcp.listSites') return handleListSites();
-    if (toolName === 'webmcp.removeSite') return handleRemoveSite(toolArgs);
+    if (toolName === 'webmcp_addSite') return handleAddSite(toolArgs);
+    if (toolName === 'webmcp_listSites') return handleListSites();
+    if (toolName === 'webmcp_removeSite') return handleRemoveSite(toolArgs);
 
     return callSiteTool(toolName, toolArgs);
   });
