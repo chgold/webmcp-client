@@ -1,81 +1,98 @@
 # webmcp-bridge
 
-MCP bridge for WebMCP-compliant servers — use any WebMCP site as a Claude Desktop MCP server.
+Meta MCP Bridge for WebMCP-compliant servers. Configure **once** in Claude Desktop, then add/remove any number of WebMCP sites dynamically — no restart required.
 
-This package acts as a client-side MCP server that connects Claude Desktop (or any MCP stdio client) to any WebMCP-compliant REST API server, without requiring any changes to the server side.
-
-## Installation
-
-Install globally:
-```bash
-npm install -g webmcp-bridge
-```
-
-Or use directly with npx:
-```bash
-npx webmcp-bridge --manifest <url> --token <token>
-```
-
-## Usage
-
-```bash
-webmcp-bridge --manifest <url> --token <bearer_token> [--name <server_name>]
-```
-
-### Options
-
-- `--manifest <url>` — Full URL to WebMCP manifest (required)
-- `--token <bearer_token>` — Bearer token for authenticated tool calls (optional — for public tools)
-- `--name <server_name>` — Override server name shown in Claude Desktop (optional)
-
-### Example
-
-```bash
-webmcp-bridge \
-  --manifest https://your-site.com/api/ai-connect/v1/manifest \
-  --token "Bearer dpc_your_token_here"
-```
-
-## Claude Desktop Configuration
-
-Add to your Claude Desktop config file (`~/.claude_desktop_config.json` on macOS/Linux, or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+## Claude Desktop Configuration (set once, never change)
 
 ```json
 {
   "mcpServers": {
-    "my-drupal": {
-      "command": "npx",
-      "args": [
-        "webmcp-bridge",
-        "--manifest", "https://your-site.com/api/ai-connect/v1/manifest",
-        "--token", "Bearer dpc_your_token_here"
-      ]
+    "webmcp": {
+      "command": "node",
+      "args": ["/path/to/webmcp-bridge/index.js"]
     }
   }
 }
 ```
 
-Then restart Claude Desktop. The server will appear in the MCP section.
+## Usage
 
-## How It Works
+### Meta Bridge Mode (default)
 
-1. **Fetch Manifest** — Retrieves the WebMCP manifest from the provided URL (public, no auth required)
-2. **Parse Tools** — Extracts tool definitions from `manifest.usage.tools[]`
-3. **Expose as MCP** — Presents tools to Claude Desktop via MCP stdio protocol
-4. **Forward Calls** — When a tool is called, forwards the request to `manifest.usage.tools_endpoint/<tool_name>` with Bearer token
+Start with no arguments — the bridge manages sites via `~/.webmcp-bridge/sites.json`:
+
+```bash
+node index.js
+```
+
+Three meta-tools are always available in Claude Desktop:
+
+| Tool | Description |
+|------|-------------|
+| `webmcp.addSite` | Add a WebMCP site — fetches manifest, loads tools, notifies Claude |
+| `webmcp.listSites` | List configured sites with tool counts |
+| `webmcp.removeSite` | Remove a site and its tools |
+
+Once a site is added, its tools appear as `{site-name}/{tool-name}`, e.g. `drupal-prod/drupal.searchNodes`.
+
+### Pre-loading a site via CLI
+
+```bash
+node index.js --site name=drupal-prod,manifest=https://site.com/api/ai-connect/v1/manifest,token=Bearer_dpc_xxx
+```
+
+Saves the site to `~/.webmcp-bridge/sites.json` and loads it immediately.
+
+### Config file
+
+`~/.webmcp-bridge/sites.json` is created automatically on first run:
+
+```json
+{
+  "sites": {
+    "drupal-prod": {
+      "manifest": "https://your-site.com/api/ai-connect/v1/manifest",
+      "token": "Bearer dpc_your_token_here"
+    }
+  }
+}
+```
+
+## Legacy Single-Site Mode
+
+For backward compatibility, the original `--manifest` flag still works:
+
+```bash
+node index.js \
+  --manifest https://your-site.com/api/ai-connect/v1/manifest \
+  --token "Bearer dpc_your_token_here" \
+  [--name "My Server"]
+```
+
+In this mode, tools are exposed without a site prefix (as in v1.0).
 
 ## WebMCP Compatibility
 
-Works with any WebMCP-compliant server, including:
+Works with any WebMCP-compliant server:
 - Drupal AI Connect module
+- WordPress (WebMCP plugin)
+- XenForo
 - Any custom WebMCP implementation
 
-## Getting a Token
+## How It Works
 
-Tokens are typically obtained via OAuth flow at the `/ai-connect` endpoint on your site. For Drupal AI Connect, you can generate a test token via drush:
+1. On startup, loads all sites from `~/.webmcp-bridge/sites.json`
+2. Fetches each manifest and populates the tool registry (unreachable sites are skipped gracefully)
+3. Exposes 3 meta-tools + all site tools via MCP stdio
+4. When `webmcp.addSite` or `webmcp.removeSite` is called:
+   - Updates the config file
+   - Reloads the tool registry
+   - Sends `notifications/tools/list_changed` so Claude Desktop refreshes immediately
+
+## Getting a Token (Drupal)
 
 ```bash
-drush php:eval "
+drush --uri=http://your-site.com php:eval "
 \$t = \Drupal::service('ai_connect.oauth_service')->createAccessToken('ai-agent-default', 1, ['read','write']);
 echo \$t['access_token'];
 "
@@ -84,7 +101,7 @@ echo \$t['access_token'];
 ## Requirements
 
 - Node.js 18 or higher
-- Network access to the WebMCP server
+- `@modelcontextprotocol/sdk` (included in `node_modules`)
 
 ## License
 
