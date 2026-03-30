@@ -6,6 +6,50 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { request as httpsRequest } from 'https';
+import { request as httpRequest } from 'http';
+
+function httpFetch(url, { method = 'GET', headers = {}, body = null, timeoutMs = 10000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { return reject(new Error(`Invalid URL: ${url}`)); }
+
+    const isHttps = parsed.protocol === 'https:';
+    const reqFn = isHttps ? httpsRequest : httpRequest;
+
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method,
+      headers,
+    };
+
+    const req = reqFn(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        const ok = res.statusCode >= 200 && res.statusCode < 300;
+        resolve({
+          ok,
+          status: res.statusCode,
+          statusText: res.statusMessage,
+          text: () => Promise.resolve(data),
+          json: () => Promise.resolve(JSON.parse(data)),
+        });
+      });
+    });
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    });
+
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
 
 const CONFIG_DIR = join(homedir(), '.webmcp-bridge');
 const CONFIG_FILE = join(CONFIG_DIR, 'sites.json');
@@ -49,7 +93,7 @@ function saveConfig() {
 }
 
 async function fetchManifest(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  const response = await httpFetch(url, { timeoutMs: 10000 });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
@@ -265,7 +309,7 @@ async function callSiteTool(toolName, toolArgs) {
       headers['Authorization'] = meta.siteConfig.token;
     }
 
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(toolArgs),
@@ -380,11 +424,11 @@ async function main() {
         const headers = { 'Content-Type': 'application/json' };
         if (token) headers['Authorization'] = token;
 
-        const response = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(toolArgs),
-        });
+         const response = await httpFetch(url, {
+           method: 'POST',
+           headers,
+           body: JSON.stringify(toolArgs),
+         });
 
         if (!response.ok) {
           const errorText = await response.text();

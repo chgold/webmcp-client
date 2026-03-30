@@ -1,6 +1,6 @@
 {
   "name": "webmcp-bridge",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Meta MCP bridge for WebMCP-compliant servers — connect Claude Desktop to any number of WebMCP sites, no restart required",
   "keywords": [
     "mcp",
