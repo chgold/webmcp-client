@@ -23,6 +23,7 @@ function httpFetch(url, { method = 'GET', headers = {}, body = null, timeoutMs =
       path: parsed.pathname + parsed.search,
       method,
       headers,
+      rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0',
     };
 
     const req = reqFn(options, (res) => {
