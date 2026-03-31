@@ -304,7 +304,7 @@ async function callSiteTool(toolName, toolArgs) {
   }
 
   try {
-    const url = `${meta.toolsEndpoint}/${meta.originalName}`;
+    const url = meta.toolsEndpoint;
     const headers = { 'Content-Type': 'application/json' };
     if (meta.siteConfig.token) {
       headers['Authorization'] = meta.siteConfig.token;
@@ -313,7 +313,7 @@ async function callSiteTool(toolName, toolArgs) {
     const response = await httpFetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(toolArgs),
+      body: JSON.stringify({ name: meta.originalName, arguments: toolArgs }),
     });
 
     if (!response.ok) {
