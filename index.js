@@ -62,6 +62,15 @@ function sanitizeName(s) {
   return s.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+function normalizeInputSchema(schema, toolName) {
+  if (!schema) return { type: 'object', properties: {} };
+  if (Array.isArray(schema.properties)) {
+    console.error(`[webmcp-client] Warning: fixed invalid schema for tool "${toolName}" (properties was array)`);
+    return { ...schema, properties: {} };
+  }
+  return schema;
+}
+
 // siteKey/toolName → { siteKey, originalName, siteConfig, toolsEndpoint, toolDef }
 const toolMeta = new Map();
 
@@ -115,12 +124,16 @@ async function loadSiteTools(siteKey, siteConfig) {
 
   for (const tool of tools) {
     const qualifiedName = `${sanitizeName(siteKey)}_${sanitizeName(tool.name)}`;
+    const normalizedTool = {
+      ...tool,
+      input_schema: normalizeInputSchema(tool.input_schema || tool.inputSchema || tool.parameters, tool.name),
+    };
     toolMeta.set(qualifiedName, {
       siteKey,
       originalName: tool.name,
       siteConfig,
       toolsEndpoint,
-      toolDef: tool,
+      toolDef: normalizedTool,
     });
   }
 
@@ -188,7 +201,7 @@ function getAllTools() {
     siteTools.push({
       name: qualifiedName,
       description: `[${meta.siteKey}] ${meta.toolDef.description || ''}`,
-      inputSchema: meta.toolDef.input_schema || meta.toolDef.inputSchema || meta.toolDef.parameters || { type: 'object', properties: {} },
+      inputSchema: meta.toolDef.input_schema || { type: 'object', properties: {} },
     });
   }
   return [...getMetaTools(), ...siteTools];
