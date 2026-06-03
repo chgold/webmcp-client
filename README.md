@@ -39,9 +39,9 @@ Or if you cloned the repo manually, point to the `index.js` directly:
 }
 ```
 
-### Behind NetFree or a Corporate SSL Proxy?
+### Behind a Corporate SSL Proxy?
 
-If you're behind NetFree (Israeli content filter) or a corporate SSL proxy, the bridge may fail with `unable to get local issuer certificate`. Fix it by setting `NODE_TLS_REJECT_UNAUTHORIZED`:
+If you're behind an SSL proxy, the bridge may fail with `unable to get local issuer certificate`. Fix it by setting `NODE_TLS_REJECT_UNAUTHORIZED`:
 
 ```json
 {
