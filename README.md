@@ -165,6 +165,22 @@ The configuration is always the same pattern. Point to the `webmcp-client` comma
 
 Refer to your client's MCP documentation for the exact config file location.
 
+### Continue.dev (`~/.continue/config.json`)
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "webmcp",
+      "command": "webmcp-client",
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  ]
+}
+```
+
+> **Note:** Continue.dev uses an array for `mcpServers` instead of an object (unlike Cline, Cursor, and other clients).
+
 ## Requirements
 
 - Node.js 18 or higher
