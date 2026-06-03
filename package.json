@@ -1,7 +1,7 @@
 {
   "name": "webmcp-client",
   "version": "2.0.4",
-  "description": "Meta MCP client for WebMCP-compliant servers \u2014 connect Claude Desktop to any number of WebMCP sites, no restart required",
+  "description": "Meta MCP client for WebMCP-compliant servers — connect Claude Desktop to any number of WebMCP sites, no restart required",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -25,9 +25,10 @@
     "url": "https://github.com/chgold/webmcp-client/issues"
   },
   "bin": {
-    "webmcp-client": "./index.js",
-    "webmcp-bridge": "./index.js"
+    "webmcp-client": "index.js",
+    "webmcp-bridge": "index.js"
   },
+  "main": "./index.js",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
