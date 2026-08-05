@@ -1,6 +1,6 @@
 {
   "name": "webmcp-client",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Meta MCP client for WebMCP-compliant servers — connect Claude Desktop to any number of WebMCP sites, no restart required",
   "keywords": [
     "mcp",

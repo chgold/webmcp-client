@@ -4,7 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, watch } from 'fs';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import { request as httpsRequest } from 'https';
@@ -14,6 +14,7 @@ const MAX_TOOL_NAME_LENGTH = 64;
 const HASH_SUFFIX_LENGTH = 8;
 const MANIFEST_TIMEOUT_MS = 10000;
 const TOKEN_REFRESH_SKEW_MS = 60000;
+const AUTH_PENDING_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_CLIENT_ID = 'claude-ai';
 const CLIENT_ID_PREFERENCE = ['claude-ai', 'claude', 'claude_client', 'chatgpt', 'openai', 'gemini', 'google'];
 const STARTUP_GRACE_MS = 2500;
@@ -351,6 +352,32 @@ function getMetaTools() {
       },
     },
     {
+      name: 'webmcp_startAuth',
+      description:
+        'Begin OAuth (PKCE) authorization for a WebMCP site. Returns a URL to approve in a browser. Use this instead of webmcp_addSite when you do not already have a token.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Site identifier to register the site under' },
+          manifest_url: { type: 'string', description: 'Full URL to the WebMCP manifest endpoint' },
+        },
+        required: ['name', 'manifest_url'],
+      },
+    },
+    {
+      name: 'webmcp_completeAuth',
+      description:
+        'Finish OAuth (PKCE) authorization started by webmcp_startAuth by exchanging the authorization code for tokens, then register the site.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Same site identifier passed to webmcp_startAuth' },
+          code: { type: 'string', description: 'Authorization code returned by the site' },
+        },
+        required: ['name', 'code'],
+      },
+    },
+    {
       name: 'webmcp_refreshSites',
       description:
         'Re-fetch manifests and refresh the tool list. Refreshes one site when "name" is given, otherwise every configured site.',
@@ -498,6 +525,169 @@ async function handleRefreshSites(args) {
   return textResult(`Refreshed ${targets.length} site(s):\n${outcomes.join('\n')}`);
 }
 
+function base64url(buffer) {
+  return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+const pendingAuth = new Map();
+
+async function exchangeToken(tokenUrl, grant) {
+  let response = await httpFetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(grant),
+  });
+
+  // Some AI Connect deployments accept only form encoding on the token endpoint.
+  if (!response.ok && response.status >= 400 && response.status < 500) {
+    response = await httpFetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(grant).toString(),
+    });
+  }
+
+  if (!response.ok) {
+    throw new Error(`token endpoint returned HTTP ${response.status} — ${await response.text()}`);
+  }
+
+  const payload = await response.json();
+  if (!payload?.access_token) {
+    throw new Error('token response did not contain access_token');
+  }
+  return payload;
+}
+
+function siteConfigFromTokenResponse(manifestUrl, tokenUrl, clientId, payload) {
+  const config = {
+    manifest: manifestUrl,
+    token: bearer(payload.access_token),
+    token_url: tokenUrl,
+    client_id: clientId,
+  };
+  if (payload.refresh_token) config.refresh_token = payload.refresh_token;
+  if (payload.expires_in) config.expires_at = Date.now() + payload.expires_in * 1000;
+  return config;
+}
+
+async function handleStartAuth(args) {
+  const { name, manifest_url } = args || {};
+  if (!name || !manifest_url) {
+    return textResult('Error: name and manifest_url are required.', true);
+  }
+
+  let manifest;
+  try {
+    manifest = await fetchManifest(manifest_url);
+  } catch (error) {
+    return textResult(`Error fetching manifest for "${name}": ${error.message}`, true);
+  }
+
+  const auth = manifest?.auth;
+  if (!auth?.authorization_url || !auth?.token_url) {
+    return textResult(
+      `Error: the manifest for "${name}" does not advertise auth.authorization_url and auth.token_url. Use webmcp_addSite with a token instead.`,
+      true
+    );
+  }
+
+  const verifier = base64url(randomBytes(48));
+  const clientId = pickClientId(manifest);
+  const redirectUri = auth.redirect_uri || 'urn:ietf:wg:oauth:2.0:oob';
+
+  const url = new URL(auth.authorization_url);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', clientId);
+  url.searchParams.set('redirect_uri', redirectUri);
+  url.searchParams.set('code_challenge', base64url(createHash('sha256').update(verifier).digest()));
+  url.searchParams.set('code_challenge_method', auth.code_challenge_method || 'S256');
+  url.searchParams.set('state', base64url(randomBytes(12)));
+  if (auth.scopes && typeof auth.scopes === 'object' && !Array.isArray(auth.scopes)) {
+    url.searchParams.set('scope', Object.keys(auth.scopes).join(' '));
+  }
+
+  pendingAuth.set(name, {
+    verifier,
+    manifestUrl: manifest_url,
+    tokenUrl: auth.token_url,
+    clientId,
+    redirectUri,
+    createdAt: Date.now(),
+  });
+
+  return textResult(
+    `Open this URL in a browser and approve access for "${name}":\n\n${url.toString()}\n\n` +
+      `Then call webmcp_completeAuth with name "${name}" and the authorization code you receive. The request expires in 15 minutes.`
+  );
+}
+
+async function handleCompleteAuth(args) {
+  const { name, code } = args || {};
+  if (!name || !code) {
+    return textResult('Error: name and code are required.', true);
+  }
+
+  const pending = pendingAuth.get(name);
+  if (!pending) {
+    return textResult(`Error: no pending authorization for "${name}". Call webmcp_startAuth first.`, true);
+  }
+  if (Date.now() - pending.createdAt > AUTH_PENDING_TTL_MS) {
+    pendingAuth.delete(name);
+    return textResult(`Error: the authorization request for "${name}" expired. Call webmcp_startAuth again.`, true);
+  }
+
+  let payload;
+  try {
+    payload = await exchangeToken(pending.tokenUrl, {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: pending.redirectUri,
+      client_id: pending.clientId,
+      code_verifier: pending.verifier,
+    });
+  } catch (error) {
+    return textResult(`Error completing authorization for "${name}": ${error.message}`, true);
+  }
+
+  const previousConfig = sitesConfig.sites[name];
+  const previousSite = sites.get(name);
+  const nextConfig = siteConfigFromTokenResponse(pending.manifestUrl, pending.tokenUrl, pending.clientId, payload);
+
+  let resolved;
+  try {
+    resolved = await resolveSite(name, nextConfig);
+  } catch (error) {
+    return textResult(`Authorized "${name}" but could not load its manifest: ${error.message}`, true);
+  }
+
+  sites.set(name, resolved);
+  sitesConfig.sites[name] = nextConfig;
+
+  try {
+    saveConfig();
+  } catch (error) {
+    if (previousSite) sites.set(name, previousSite);
+    else sites.delete(name);
+    if (previousConfig) sitesConfig.sites[name] = previousConfig;
+    else delete sitesConfig.sites[name];
+    rebuildToolRegistry();
+    return textResult(`Error saving configuration for "${name}": ${error.message}`, true);
+  }
+
+  pendingAuth.delete(name);
+  rebuildToolRegistry();
+  scheduleToolsChanged();
+
+  const published = publishedNamesFor(name);
+  const listing = published.length ? `\nTools: ${published.join(', ')}` : '';
+  const warning = nextConfig.refresh_token
+    ? ''
+    : '\n⚠ The server returned no refresh_token, so this connection will stop working when the access token expires.';
+  return textResult(
+    `✓ Site "${name}" authorized — ${resolved.tools.length} tool(s) loaded. ${sites.size} site(s) connected.${listing}${warning}`
+  );
+}
+
 const inFlightRefresh = new Map();
 
 function tokenUrlFor(siteKey) {
@@ -525,29 +715,7 @@ async function performRefresh(siteKey) {
     client_id: clientIdFor(siteKey),
   };
 
-  let response = await httpFetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(grant),
-  });
-
-  // Some AI Connect deployments accept only form encoding on the token endpoint.
-  if (!response.ok && response.status >= 400 && response.status < 500) {
-    response = await httpFetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(grant).toString(),
-    });
-  }
-
-  if (!response.ok) {
-    throw new Error(`token endpoint returned HTTP ${response.status} — ${await response.text()}`);
-  }
-
-  const payload = await response.json();
-  if (!payload?.access_token) {
-    throw new Error('token response did not contain access_token');
-  }
+  const payload = await exchangeToken(tokenUrl, grant);
 
   siteConfig.token = bearer(payload.access_token);
   // The server revokes the old pair on every refresh, so a rotated refresh_token
@@ -826,8 +994,12 @@ async function main() {
     new Promise((resolve) => setTimeout(resolve, STARTUP_GRACE_MS).unref?.()),
   ]);
 
+  // Deliberately the low-level Server rather than McpServer: McpServer runs every
+  // tool's inputSchema through normalizeObjectSchema/toJsonSchemaCompat, which expects
+  // Zod. Our schemas are raw JSON Schema proxied from remote manifests, so they would
+  // all degrade to an empty schema and lose their parameters.
   server = new Server(
-    { name: 'WebMCP Meta Client', version: '2.1.0' },
+    { name: 'WebMCP Meta Client', version: '2.2.0' },
     { capabilities: { tools: { listChanged: true } } }
   );
 
@@ -840,6 +1012,8 @@ async function main() {
     if (toolName === 'webmcp_addSite') return handleAddSite(toolArgs);
     if (toolName === 'webmcp_listSites') return handleListSites();
     if (toolName === 'webmcp_removeSite') return handleRemoveSite(toolArgs);
+    if (toolName === 'webmcp_startAuth') return handleStartAuth(toolArgs);
+    if (toolName === 'webmcp_completeAuth') return handleCompleteAuth(toolArgs);
     if (toolName === 'webmcp_refreshSites') return handleRefreshSites(toolArgs);
 
     return callSiteTool(toolName, toolArgs);

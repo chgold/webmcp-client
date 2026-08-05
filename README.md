@@ -1,4 +1,4 @@
-# webmcp-client v2.1
+# webmcp-client v2.2
 
 Meta MCP Client for WebMCP-compliant servers. Configure **once** in any MCP client, then add/remove any number of WebMCP sites dynamically. No restart required.
 
@@ -73,9 +73,31 @@ Four meta-tools are always available in Claude Desktop:
 | `webmcp_addSite` | Add **or update** a WebMCP site — fetches manifest, loads tools, notifies the client. Takes `name`, `manifest_url`, `token`, and (strongly recommended) `refresh_token` |
 | `webmcp_listSites` | List configured sites with tool counts |
 | `webmcp_removeSite` | Remove a site and its tools |
+| `webmcp_startAuth` | Begin OAuth (PKCE) authorization — returns a URL to approve in a browser |
+| `webmcp_completeAuth` | Exchange the authorization code for tokens and register the site |
 | `webmcp_refreshSites` | Re-fetch manifests for one site (`name`) or all sites, picking up newly added tools |
 
 Once a site is added, its tools appear as `{site_name}_{tool_name}`, e.g. `drupal-prod_drupal_searchNodes`.
+
+### Connecting a site with OAuth (no token pasting)
+
+If the site's manifest advertises an `auth` block, you can authorize without handling tokens
+manually. The client implements the PKCE authorization-code flow:
+
+```
+webmcp_startAuth      name: "gold-t.co.il"
+                      manifest_url: "https://gold-t.co.il/api/aiconnect-manifest"
+→ returns an authorization URL; open it and approve
+
+webmcp_completeAuth   name: "gold-t.co.il"
+                      code: "<the code the site gave you>"
+→ exchanges the code, stores access + refresh tokens, registers the site
+```
+
+The client generates a fresh `code_verifier` per attempt, sends only the S256 `code_challenge` to the
+authorization endpoint, picks `client_id` from `auth.registered_clients`, and requests every scope the
+manifest declares. Pending authorizations expire after 15 minutes. A site registered this way behaves
+exactly like one added via `webmcp_addSite`, including automatic token refresh.
 
 ### Tokens and automatic refresh
 

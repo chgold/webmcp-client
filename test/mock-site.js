@@ -1,4 +1,9 @@
 import { createServer } from 'http';
+import { createHash } from 'crypto';
+
+function base64url(buffer) {
+  return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
 
 export function startMockSite({
   name,
@@ -6,6 +11,7 @@ export function startMockSite({
   manifestPath = '/manifest',
   toolsPath = '/tools',
   oauthPath = '/oauth',
+  authorizePath = '/authorize',
   toolsKey = 'usage',
   requireToken = null,
   requireManifestToken = null,
@@ -35,8 +41,14 @@ export function startMockSite({
       if (oauth) {
         manifest.auth = {
           type: 'oauth2',
+          flow: 'authorization_code',
+          authorization_url: `http://127.0.0.1:${port}${authorizePath}`,
           token_url: `http://127.0.0.1:${port}${oauthPath}`,
+          pkce_required: true,
+          code_challenge_method: 'S256',
+          redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
           grant_types: ['authorization_code', 'refresh_token'],
+          scopes: oauth.scopes || { read: 'Read', write: 'Write' },
           registered_clients: oauth.registeredClients || { 'claude-ai': 'Claude AI' },
         };
       }
@@ -53,6 +65,19 @@ export function startMockSite({
       return;
     }
 
+    if (url.pathname === authorizePath) {
+      state.pkce = {
+        challenge: url.searchParams.get('code_challenge'),
+        method: url.searchParams.get('code_challenge_method'),
+        clientId: url.searchParams.get('client_id'),
+        redirectUri: url.searchParams.get('redirect_uri'),
+        scope: url.searchParams.get('scope'),
+        responseType: url.searchParams.get('response_type'),
+        state: url.searchParams.get('state'),
+      };
+      return send(200, { code: oauth?.code || 'test-auth-code' });
+    }
+
     if (url.pathname === oauthPath && req.method === 'POST') {
       let raw = '';
       req.on('data', (c) => (raw += c));
@@ -64,6 +89,27 @@ export function startMockSite({
           body = Object.fromEntries(new URLSearchParams(raw));
         }
         refreshCalls.push({ body, contentType: req.headers['content-type'] });
+
+        if (body.grant_type === 'authorization_code') {
+          if (body.code !== (oauth?.code || 'test-auth-code')) {
+            return send(400, { error: 'invalid_grant' });
+          }
+          if (!state.pkce?.challenge) {
+            return send(400, { error: 'no authorization request seen' });
+          }
+          const expected = base64url(createHash('sha256').update(body.code_verifier || '').digest());
+          if (expected !== state.pkce.challenge) {
+            return send(400, { error: 'invalid_grant', detail: 'PKCE verifier does not match challenge' });
+          }
+          state.accessToken = 'Bearer granted-access';
+          state.refreshToken = 'granted-refresh';
+          return send(200, {
+            access_token: 'granted-access',
+            token_type: 'Bearer',
+            expires_in: oauth?.expiresIn ?? 3600,
+            refresh_token: state.refreshToken,
+          });
+        }
 
         if (body.grant_type !== 'refresh_token') {
           return send(400, { error: 'unsupported_grant_type' });
@@ -119,6 +165,7 @@ export function startMockSite({
         expireAccessToken: (value = 'Bearer expired-sentinel') => {
           state.accessToken = value;
         },
+        authorizeUrl: `http://127.0.0.1:${port}${authorizePath}`,
         manifestUrl: `http://127.0.0.1:${port}${manifestPath}`,
         toolsUrl: `http://127.0.0.1:${port}${toolsPath}`,
         close: () => new Promise((r) => server.close(r)),

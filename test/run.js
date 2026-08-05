@@ -469,6 +469,81 @@ async function testConcurrentRefreshDeduped() {
   await h.close();
 }
 
+async function approveInBrowser(authUrl) {
+  const res = await fetch(authUrl);
+  const body = await res.json();
+  return body.code;
+}
+
+function extractUrl(text) {
+  return text.match(/https?:\/\/[^\s]+/)?.[0];
+}
+
+async function testPkceOAuthFlow() {
+  const s = await site({
+    name: 'oauth-site',
+    tools: makeTools(3, 'o'),
+    requireToken: 'Bearer nothing-yet',
+    oauth: { refreshToken: 'unused', expiresIn: 3600 },
+  });
+
+  const h = await startClient();
+  const started = await h.callTool('webmcp_startAuth', { name: 'oauth-site', manifest_url: s.manifestUrl });
+  check('startAuth succeeds', started.isError !== true, started.content[0].text.split('\n')[0]);
+
+  const authUrl = extractUrl(started.content[0].text);
+  check('startAuth returns an authorization URL', Boolean(authUrl), authUrl);
+
+  const code = await approveInBrowser(authUrl);
+  check('authorization request carried PKCE S256 challenge', s.state.pkce?.method === 'S256' && Boolean(s.state.pkce?.challenge), JSON.stringify(s.state.pkce?.method));
+  check('authorization request carried client_id and response_type', s.state.pkce?.clientId === 'claude-ai' && s.state.pkce?.responseType === 'code', s.state.pkce?.clientId);
+  check('authorization request carried scopes', Boolean(s.state.pkce?.scope), s.state.pkce?.scope);
+
+  const completed = await h.callTool('webmcp_completeAuth', { name: 'oauth-site', code });
+  check('completeAuth succeeds (server verified the PKCE verifier)', completed.isError !== true, completed.content[0].text.split('\n')[0]);
+
+  const names = siteToolNames(await h.listTools());
+  check('OAuth-registered site publishes its tools', names.length === 3, names.join(', '));
+
+  const called = await h.callTool(names[0], {});
+  check('tool call works with the granted token', called.isError !== true, s.calls.at(-1)?.authorization);
+
+  const cfg = JSON.parse(readFileSync(join(h.home, '.webmcp-client', 'sites.json'), 'utf-8'));
+  check('granted tokens persisted', cfg.sites['oauth-site'].token === 'Bearer granted-access' && cfg.sites['oauth-site'].refresh_token === 'granted-refresh');
+  check('token_url and client_id recorded', Boolean(cfg.sites['oauth-site'].token_url) && cfg.sites['oauth-site'].client_id === 'claude-ai');
+
+  s.expireAccessToken('Bearer stale');
+  const afterExpiry = await h.callTool(names[0], {});
+  check('OAuth-registered site refreshes like any other', afterExpiry.isError !== true, `${s.refreshCalls.length} refresh call(s)`);
+
+  await h.close();
+}
+
+async function testOAuthRejectsBadCode() {
+  const s = await site({ name: 'oauth-bad', tools: makeTools(1, 'x'), oauth: { refreshToken: 'u' } });
+  const h = await startClient();
+
+  const noPending = await h.callTool('webmcp_completeAuth', { name: 'oauth-bad', code: 'whatever' });
+  check('completeAuth without startAuth is rejected', noPending.isError === true, noPending.content[0].text.slice(0, 70));
+
+  const started = await h.callTool('webmcp_startAuth', { name: 'oauth-bad', manifest_url: s.manifestUrl });
+  await approveInBrowser(extractUrl(started.content[0].text));
+
+  const bad = await h.callTool('webmcp_completeAuth', { name: 'oauth-bad', code: 'wrong-code' });
+  check('completeAuth with wrong code is rejected', bad.isError === true, bad.content[0].text.slice(0, 70));
+  check('rejected auth registers no site', siteToolNames(await h.listTools()).length === 0);
+
+  await h.close();
+}
+
+async function testStartAuthWithoutOAuthManifest() {
+  const s = await site({ name: 'plain', tools: makeTools(1, 'p') });
+  const h = await startClient();
+  const res = await h.callTool('webmcp_startAuth', { name: 'plain', manifest_url: s.manifestUrl });
+  check('startAuth explains when a site has no OAuth block', res.isError === true && res.content[0].text.includes('webmcp_addSite'), res.content[0].text.slice(0, 90));
+  await h.close();
+}
+
 async function main() {
   await testCapability();
   await testManySitesDynamic();
@@ -488,6 +563,9 @@ async function main() {
   await testRefreshSurvivesRestart();
   await testMissingRefreshTokenIsWarned();
   await testConcurrentRefreshDeduped();
+  await testPkceOAuthFlow();
+  await testOAuthRejectsBadCode();
+  await testStartAuthWithoutOAuthManifest();
 
   const failed = results.filter((r) => !r.pass);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
