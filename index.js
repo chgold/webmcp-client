@@ -184,6 +184,7 @@ function rebuildToolRegistry() {
         siteKey,
         originalName: tool.name,
         toolsEndpoint: entry.toolsEndpoint,
+        bodyFormat: entry.bodyFormat,
         tool,
       });
     }
@@ -301,6 +302,7 @@ async function resolveSite(siteKey, siteConfig) {
   return {
     config: siteConfig,
     toolsEndpoint,
+    bodyFormat: manifest?.usage?.body_format || null,
     tokenUrl: manifest?.auth?.token_url || null,
     clientId: pickClientId(manifest),
     tools: normalizeManifestTools(rawTools, siteKey),
@@ -750,15 +752,27 @@ function canRefresh(siteKey) {
   return Boolean(sitesConfig.sites[siteKey]?.refresh_token && tokenUrlFor(siteKey));
 }
 
-function postTool(endpoint, token, originalName, toolArgs) {
+/**
+ * Build the HTTP request for one tool call.
+ *
+ * Servio §6.3: when usage.tools_endpoint carries a `{tool_name}` placeholder, the name goes into the URL and
+ * the body is the tool's flat argument object (WordPress, Drupal). Endpoints without the placeholder, and
+ * servers that declare usage.body_format "mcp" (XenForo), receive {"name", "arguments"} as before.
+ */
+function buildToolRequest(endpoint, originalName, toolArgs, bodyFormat) {
+  const templated = typeof endpoint === 'string' && endpoint.includes('{tool_name}');
+  const url = templated ? endpoint.split('{tool_name}').join(encodeURIComponent(originalName)) : endpoint;
+  const flat = templated && bodyFormat !== 'mcp';
+  const body = flat ? (toolArgs || {}) : { name: originalName, arguments: toolArgs };
+  return { url, body: JSON.stringify(body) };
+}
+
+function postTool(endpoint, token, originalName, toolArgs, bodyFormat) {
   const headers = { 'Content-Type': 'application/json' };
   const auth = bearer(token);
   if (auth) headers['Authorization'] = auth;
-  return httpFetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ name: originalName, arguments: toolArgs }),
-  });
+  const { url, body } = buildToolRequest(endpoint, originalName, toolArgs, bodyFormat);
+  return httpFetch(url, { method: 'POST', headers, body });
 }
 
 async function callSiteTool(toolName, toolArgs) {
@@ -779,7 +793,7 @@ async function callSiteTool(toolName, toolArgs) {
 
     for (let attempt = 0; attempt < 3; attempt++) {
       const tokenUsed = sitesConfig.sites[siteKey]?.token;
-      response = await postTool(meta.toolsEndpoint, tokenUsed, meta.originalName, toolArgs);
+      response = await postTool(meta.toolsEndpoint, tokenUsed, meta.originalName, toolArgs, meta.bodyFormat);
 
       const unauthorized = response.status === 401 || response.status === 403;
       if (!unauthorized || !canRefresh(siteKey)) break;
@@ -936,11 +950,10 @@ async function runLegacySingleSiteMode(cliArgs) {
       const headers = { 'Content-Type': 'application/json' };
       if (cliArgs.token) headers['Authorization'] = cliArgs.token;
 
-      const response = await httpFetch(toolsEndpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ name: tool.name, arguments: request.params.arguments || {} }),
-      });
+      const { url, body } = buildToolRequest(
+        toolsEndpoint, tool.name, request.params.arguments || {}, manifest?.usage?.body_format || null
+      );
+      const response = await httpFetch(url, { method: 'POST', headers, body });
 
       if (!response.ok) {
         return textResult(`Error: HTTP ${response.status} - ${await response.text()}`, true);

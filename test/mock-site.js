@@ -10,6 +10,8 @@ export function startMockSite({
   tools = [],
   manifestPath = '/manifest',
   toolsPath = '/tools',
+  toolsQuery = '',
+  bodyFormat = null,
   oauthPath = '/oauth',
   authorizePath = '/authorize',
   toolsKey = 'usage',
@@ -36,7 +38,7 @@ export function startMockSite({
         return send(401, { error: 'manifest requires auth' });
       }
       const port = server.address().port;
-      const toolsEndpoint = `http://127.0.0.1:${port}${toolsPath}`;
+      const toolsEndpoint = `http://127.0.0.1:${port}${toolsPath}${toolsQuery}`;
       const manifest = { server: { name } };
       if (oauth) {
         manifest.auth = {
@@ -58,6 +60,7 @@ export function startMockSite({
         manifest.usage = { tools_endpoint: toolsEndpoint };
         manifest.tools = tools;
       }
+      if (bodyFormat) manifest.usage.body_format = bodyFormat;
       setTimeout(() => {
         if (manifestStatus !== 200) return send(manifestStatus, { error: 'mock failure' });
         send(200, manifest);
@@ -144,7 +147,7 @@ export function startMockSite({
         } catch {
           return send(400, { error: 'bad json' });
         }
-        calls.push({ site: name, body: parsed, authorization: req.headers.authorization });
+        calls.push({ site: name, body: parsed, query: url.searchParams.get('name'), authorization: req.headers.authorization });
         send(200, { site: name, tool: parsed.name, echo: parsed.arguments ?? null });
       });
       return;

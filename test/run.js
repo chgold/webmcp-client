@@ -544,6 +544,25 @@ async function testStartAuthWithoutOAuthManifest() {
   await h.close();
 }
 
+async function testTemplatedToolsEndpoint() {
+  // WordPress / Drupal style (Servio §6.3): ?name={tool_name} in the URL, flat arguments in the body.
+  const wp = await site({ name: 'wp', tools: makeTools(1, 'wordpress.search'), toolsPath: '/api/aiconnect-tools', toolsQuery: '?name={tool_name}' });
+  // XenForo style: same placeholder, but body_format "mcp" keeps {name, arguments}.
+  const xf = await site({ name: 'xf', tools: makeTools(1, 'xenforo.search'), toolsPath: '/api/aiconnect-tools', toolsQuery: '?name={tool_name}', bodyFormat: 'mcp' });
+  const h = await startClient();
+  await h.callTool('webmcp_addSite', { name: 'wp', manifest_url: wp.manifestUrl, token: 'Bearer t1' });
+  await h.callTool('webmcp_addSite', { name: 'xf', manifest_url: xf.manifestUrl, token: 'Bearer t2' });
+  const names = siteToolNames(await h.listTools());
+  await h.callTool(names.find((n) => n.startsWith('wp_')), { q: 'brake' });
+  await h.callTool(names.find((n) => n.startsWith('xf_')), { q: 'brake' });
+  const w = wp.calls[0] || {};
+  const x = xf.calls[0] || {};
+  check('templated endpoint gets the real tool name in the URL', w.query === 'wordpress.search1', String(w.query));
+  check('templated endpoint gets flat arguments', JSON.stringify(w.body) === JSON.stringify({ q: 'brake' }), JSON.stringify(w.body));
+  check('body_format "mcp" keeps {name, arguments}', x.body?.name === 'xenforo.search1' && x.body?.arguments?.q === 'brake', JSON.stringify(x.body));
+  await h.close();
+}
+
 async function main() {
   await testCapability();
   await testManySitesDynamic();
@@ -566,6 +585,7 @@ async function main() {
   await testPkceOAuthFlow();
   await testOAuthRejectsBadCode();
   await testStartAuthWithoutOAuthManifest();
+  await testTemplatedToolsEndpoint();
 
   const failed = results.filter((r) => !r.pass);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
