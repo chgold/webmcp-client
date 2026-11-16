@@ -314,4 +314,4 @@ npm run test:live
 
 ## License
 
-MIT
+[MIT](LICENSE)
